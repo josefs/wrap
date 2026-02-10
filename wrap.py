@@ -43,32 +43,80 @@ def _print_err(*args):
     print(*args, file=sys.stderr)
 
 
-def detect_git_subcommands(base_cmd: str):
-    """Return a set of git subcommands if base_cmd == 'git', else empty set.
-    Uses `git help -a` and parses lines like '  add, ...' or '  worktree'.
+# =============================================================================
+# Plugin System
+# =============================================================================
+
+class CommandPlugin:
+    """Base class for command-specific plugins.
+    
+    To add support for a new command:
+    1. Subclass CommandPlugin
+    2. Set `command_name` to match the base command (e.g., "git", "docker")
+    3. Override methods as needed
+    4. Add an instance to PLUGINS list
     """
-    if os.path.basename(base_cmd) != "git":
+    command_name: str = ""
+    
+    def matches(self, base_cmd: str) -> bool:
+        """Return True if this plugin handles the given command."""
+        return os.path.basename(base_cmd) == self.command_name
+    
+    def get_subcommands(self, base_cmd: str) -> set:
+        """Return a set of subcommands for tab completion."""
         return set()
-    try:
-        out = subprocess.check_output([base_cmd, "help", "-a"], stderr=subprocess.DEVNULL, text=True)
-    except Exception:
-        return set()
-    cmds = set()
-    for line in out.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        # Sections contain commands separated by spaces, occasionally commas
-        if re.match(r"^[a-z0-9][a-z0-9-]*([ ,][a-z0-9-]+)*$", line):
-            for tok in re.split(r"[ ,]+", line):
-                if tok:
-                    cmds.add(tok)
-    # Fallback: parse lines with leading two spaces then word
-    for line in out.splitlines():
-        m = re.match(r"\s{2,}([a-z0-9-]+)\b", line)
-        if m:
-            cmds.add(m.group(1))
-    return cmds
+
+
+class GitPlugin(CommandPlugin):
+    """Plugin for git command support."""
+    command_name = "git"
+    
+    def get_subcommands(self, base_cmd: str) -> set:
+        """Parse git subcommands from `git help -a`."""
+        try:
+            out = subprocess.check_output(
+                [base_cmd, "help", "-a"], stderr=subprocess.DEVNULL, text=True
+            )
+        except Exception:
+            return set()
+        cmds = set()
+        for line in out.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            # Sections contain commands separated by spaces, occasionally commas
+            if re.match(r"^[a-z0-9][a-z0-9-]*([ ,][a-z0-9-]+)*$", line):
+                for tok in re.split(r"[ ,]+", line):
+                    if tok:
+                        cmds.add(tok)
+        # Fallback: parse lines with leading two spaces then word
+        for line in out.splitlines():
+            m = re.match(r"\s{2,}([a-z0-9-]+)\b", line)
+            if m:
+                cmds.add(m.group(1))
+        return cmds
+
+
+# Register plugins here
+PLUGINS: list[CommandPlugin] = [
+    GitPlugin(),
+]
+
+
+def get_plugin(base_cmd: str) -> Optional[CommandPlugin]:
+    """Find a plugin that handles the given command."""
+    for plugin in PLUGINS:
+        if plugin.matches(base_cmd):
+            return plugin
+    return None
+
+
+def get_subcommands(base_cmd: str) -> set:
+    """Get subcommands for a command using its plugin, if available."""
+    plugin = get_plugin(base_cmd)
+    if plugin:
+        return plugin.get_subcommands(base_cmd)
+    return set()
 
 
 def build_completer(base_cmd: str, subcommands):
@@ -220,7 +268,7 @@ def handle_command(raw: str, base_cmd: str, base_args: list[str], vars_map: dict
 
 
 def run_repl(base_cmd: str, base_args: list[str]):
-    subcommands = detect_git_subcommands(base_cmd)
+    subcommands = get_subcommands(base_cmd)
     build_completer(base_cmd, subcommands)
 
     vars_map: dict[str, str] = {}
